@@ -326,6 +326,12 @@ def build_agent(model, db, tools):
 
     return g.compile()
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+
 
 # ── Convenience builders ─────────────────────────────────────────────────────
 
@@ -348,8 +354,9 @@ def build_groq_agent(
     api_key : str, optional
         Groq API key; falls back to GROQ_API_KEY environment variable.
     """
-
-    groq_key = "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" #api_key or os.getenv("GROQ_API_KEY")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+    
+    groq_key = os.getenv("GROQ_API_KEY") #api_key or os.getenv("GROQ_API_KEY")
     if not groq_key:
         raise ValueError("Set GROQ_API_KEY or pass api_key to build_groq_agent().")
 
