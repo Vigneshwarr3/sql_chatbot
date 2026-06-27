@@ -91,22 +91,58 @@ const SYSTEM_PROMPT = `You are a PostgreSQL expert. Write a precise SELECT query
 Use only column names that exist in the provided schema.
 Never modify data (no INSERT / UPDATE / DELETE / DROP).
 
-CRITICAL RULES:
-- Enclose ALL column names in double quotes exactly as they appear in the schema (e.g. "YEAR", "CRIME_TYPE").
-- String literals use single quotes (e.g. WHERE "CRIME_TYPE" = 'THEFT').
-- Do NOT add a LIMIT clause unless the question explicitly asks for top-N or a specific number.
-- Use CTEs (WITH clauses) for multi-step aggregations or window function pipelines.
-- For percentage calculations use: ROUND(100.0 * numerator / NULLIF(denominator, 0), 2).
-- Return ONLY the SQL query — no explanations, no markdown fences.
-- If the question cannot be answered with SELECT, respond with exactly: INVALID_REQUEST`
+=== DATABASE RELATIONSHIPS ===
+The crime_incidents table stores location as numeric codes:
+  crime_incidents."DISTRICT"       (integer) → district_names."district_id"
+  crime_incidents."COMMUNITY_AREA" (integer) → community_area_names."community_area_id"
+  crime_incidents."WARD"           (integer) → ward_names."ward_id"
 
-async function generateSQL(question: string, schema: string): Promise<string | null> {
+Lookup tables:
+  district_names      : "district_id" (int PK), "district_name" (text)
+  community_area_names: "community_area_id" (int PK), "community_area_name" (text)
+  ward_names          : "ward_id" (int PK), "ward_name" (text)
+
+=== CRITICAL RULES ===
+1. QUOTING IDENTIFIERS: Enclose ALL column and table names in double quotes:
+     "YEAR", "DISTRICT", "CRIME_TYPE", "crime_incidents", "district_names"
+
+2. QUOTING STRING VALUES: ALWAYS use single quotes for string/text values:
+     WHERE "CRIME_TYPE" = 'THEFT'      ← CORRECT
+     WHERE "CRIME_TYPE" = "THEFT"      ← WRONG (double quotes = column name, not a value)
+   Numeric values need no quotes: WHERE "YEAR" = 2020
+
+3. RESOLVING LOCATION NAMES — most important rule:
+   When the user mentions a district, community area, or ward BY NAME (e.g. "Central",
+   "Lincoln Park", "Austin"), you MUST join with the lookup table and filter by name.
+   NEVER hardcode numeric IDs or guess them.
+
+   CORRECT example for "central district":
+     SELECT COUNT(*) FROM "crime_incidents" ci
+     JOIN "district_names" dn ON ci."DISTRICT" = dn."district_id"
+     WHERE dn."district_name" ILIKE 'Central'
+       AND ci."YEAR" = 2020;
+
+   WRONG example:
+     WHERE "DISTRICT" = '001'   ← hardcoded code, wrong
+
+4. Use ILIKE for name matching so capitalisation does not matter.
+5. Do NOT add a LIMIT clause unless the question explicitly asks for top-N or a specific number.
+6. Use CTEs (WITH clauses) for multi-step aggregations or window function pipelines.
+7. For percentage calculations use: ROUND(100.0 * numerator / NULLIF(denominator, 0), 2).
+8. Return ONLY the SQL query — no explanations, no markdown fences.
+9. If the question cannot be answered with SELECT, respond with exactly: INVALID_REQUEST`
+
+async function generateSQL(question: string, schema: string, lastError?: string): Promise<string | null> {
+  let userContent = `Schema:\n${schema}\n\nQuestion: ${question}`
+  if (lastError) {
+    userContent += `\n\nPrevious query failed validation with this error:\n${lastError}\nPlease fix the query.`
+  }
   const res = await groq.chat.completions.create({
     model: MODEL,
     temperature: 0,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: `Schema:\n${schema}\n\nQuestion: ${question}` },
+      { role: 'user', content: userContent },
     ],
   })
   let sql = res.choices[0].message.content?.trim() ?? ''
@@ -117,14 +153,15 @@ async function generateSQL(question: string, schema: string): Promise<string | n
 
 // ── SQL validator ─────────────────────────────────────────────────────────────
 
-async function validateSQL(sql: string): Promise<boolean> {
-  if (/\b(UPDATE|DELETE|DROP|INSERT|ALTER)\b/i.test(sql)) return false
+async function validateSQL(sql: string): Promise<{ valid: boolean; error?: string }> {
+  if (/\b(UPDATE|DELETE|DROP|INSERT|ALTER)\b/i.test(sql))
+    return { valid: false, error: 'DML statement detected' }
   const client = await pool.connect()
   try {
     await client.query(`EXPLAIN ${sql}`)
-    return true
-  } catch {
-    return false
+    return { valid: true }
+  } catch (e) {
+    return { valid: false, error: e instanceof Error ? e.message : String(e) }
   } finally {
     client.release()
   }
@@ -220,10 +257,15 @@ app.post('/api/chat', async (req, res) => {
     }
 
     let sql: string | null = null
+    let lastError: string | undefined
     for (let attempt = 0; attempt < 3 && !sql; attempt++) {
-      const candidate = await generateSQL(question, schema)
-      if (candidate && (await validateSQL(candidate))) {
+      const candidate = await generateSQL(question, schema, lastError)
+      if (!candidate) break
+      const { valid, error } = await validateSQL(candidate)
+      if (valid) {
         sql = candidate
+      } else {
+        lastError = error
       }
     }
 

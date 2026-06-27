@@ -16,6 +16,9 @@
 services:
 
   sql-agent-web:
+    # image: used by the server to pull from GHCR (set DOCKER_IMAGE env var)
+    # build: used locally with `docker compose up --build`
+    image: ${DOCKER_IMAGE:-sql-agent-web:local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -29,7 +32,7 @@ services:
       NODE_ENV: production
 
       # ── Database (internal network — postgres_db is the Airflow stack service) ──
-      DATABASE_URL: "postgresql://admin:admin%40123@postgres_db:5432/chicago_crime"
+      DATABASE_URL: "postgresql://admin:admin%40123@postgres_db:5432/chicago_crime_new"
       DATABASE_SSL: "false"
 
       # ── MinIO (internal network — not yet used by this service, reserved) ────

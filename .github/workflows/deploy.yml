@@ -1,0 +1,99 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+
+# ── Secrets required ──────────────────────────────────────────────────────────
+#
+#  DOCKERHUB_USERNAME   Your Docker Hub username
+#  DOCKERHUB_TOKEN      Docker Hub access token (hub.docker.com → Account Settings
+#                       → Personal access tokens)
+#
+#  TS_AUTHKEY           Tailscale auth key (tailscale.com/admin/settings/keys)
+#                       Create as "Reusable" so multiple runs can share it.
+#
+#  SSH_HOST             Tailscale IP of your server (e.g. 100.90.162.48)
+#  SSH_USER             SSH username on that server
+#  SSH_PRIVATE_KEY      Private key whose public half is in ~/.ssh/authorized_keys
+#
+#  GROQ_API_KEY         Your Groq API key
+#  DATABASE_URL         PostgreSQL connection string used by the container
+# ─────────────────────────────────────────────────────────────────────────────
+
+jobs:
+  # ── 1. Build the Docker image and push to Docker Hub ────────────────────────
+  build:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/sql-agent-web
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./web
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+
+  # ── 2. SSH into the server (via Tailscale) and redeploy ─────────────────────
+  deploy:
+    name: Deploy to server
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/sql-agent-web
+
+    steps:
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+      - name: Pull image and restart container
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: IMAGE
+          script: |
+            set -e
+
+            # Authenticate against Docker Hub so we can pull
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | \
+              docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+
+            # Pull the freshly built image
+            docker pull "${IMAGE}:latest"
+
+            # Stop and remove the old container (ignore errors if it isn't running)
+            docker stop sql-agent-web || true
+            docker rm   sql-agent-web || true
+
+            # Start the new container
+            docker run -d \
+              --name sql-agent-web \
+              --restart unless-stopped \
+              -p 9533:3000 \
+              -e NODE_ENV=production \
+              -e GROQ_API_KEY="${{ secrets.GROQ_API_KEY }}" \
+              -e DATABASE_URL="${{ secrets.DATABASE_URL }}" \
+              -e DATABASE_SSL=false \
+              --network data-infra-network \
+              "${IMAGE}:latest"
+
+            # Remove dangling images to free disk space
+            docker image prune -f
