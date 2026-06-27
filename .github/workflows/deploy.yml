@@ -28,6 +28,7 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             set -e
+            export PATH=$PATH:/snap/bin:/usr/local/bin:/usr/bin
 
             echo "Navigating to project..."
             cd ~/vscode_storage/sql_chatbot/web
@@ -36,14 +37,14 @@ jobs:
             git -C .. pull origin main
 
             echo "Stopping containers..."
-            /usr/bin/docker compose down --remove-orphans || true
+            docker compose down --remove-orphans || true
 
             echo "Building and starting containers..."
-            if ! /usr/bin/docker compose up -d --build --remove-orphans; then
+            if ! docker compose up -d --build --remove-orphans; then
               echo "docker compose failed. Container status:"
-              /usr/bin/docker compose ps
+              docker compose ps
               echo "sql-agent-web logs:"
-              /usr/bin/docker compose logs --tail=100 sql-agent-web
+              docker compose logs --tail=100 sql-agent-web
               exit 1
             fi
 
@@ -51,7 +52,7 @@ jobs:
             sleep 20
 
             echo "Container status:"
-            /usr/bin/docker compose ps
+            docker compose ps
 
             echo "Cleaning up old images..."
             docker image prune -f
