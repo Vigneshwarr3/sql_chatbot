@@ -23,7 +23,7 @@ jobs:
       - name: Deploy to server
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: 100.83.128.113
+          host: 100.90.162.48
           username: vicky
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
